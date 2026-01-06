@@ -25,7 +25,7 @@ namespace ForexNotificationSystem.Application.Commands.Handlers
 
             await _db.SaveChangesAsync(cancellationToken);
 
-            return Unit.Value;
+            return Unit.Value; 
         }
     }
 }
