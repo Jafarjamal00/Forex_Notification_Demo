@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Forex Test Client - Fixed</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        background: #f5f5f5;
+      }
+      .container {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+      }
+      h3 {
+        color: #333;
+        margin-top: 0;
+      }
+      input {
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+      }
+      #token {
+        width: 100%;
+        margin-bottom: 10px;
+        font-family: monospace;
+      }
+      #symbol {
+        width: 200px;
+        margin-right: 10px;
+      }
+      button {
+        padding: 10px 20px;
+        background: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        margin-right: 10px;
+      }
+      button:hover {
+        background: #0056b3;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      .subscribe-btn {
+        background: #28a745;
+      }
+      .subscribe-btn:hover {
+        background: #1e7e34;
+      }
+      .unsubscribe-btn {
+        background: #dc3545;
+      }
+      .unsubscribe-btn:hover {
+        background: #c82333;
+      }
+      #log {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        padding: 15px;
+        height: 400px;
+        overflow-y: auto;
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        border-radius: 4px;
+      }
+      .status {
+        padding: 10px;
+        border-radius: 4px;
+        margin: 10px 0;
+        font-weight: bold;
+      }
+      .status.connected {
+        background: #d4edda;
+        color: #155724;
+      }
+      .status.disconnected {
+        background: #f8d7da;
+        color: #721c24;
+      }
+      .price-update {
+        background: #e7f3ff;
+        padding: 10px;
+        margin: 5px 0;
+        border-left: 4px solid #007bff;
+        border-radius: 4px;
+      }
+      .event-log {
+        color: #666;
+        font-style: italic;
+      }
+      .error-log {
+        color: #dc3545;
+        font-weight: bold;
+      }
+      .clear-btn {
+        background: #6c757d;
+        float: right;
+      }
+      .clear-btn:hover {
+        background: #545b62;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h3>🌍 Forex Test Client</h3>
+
+      <label for="token">JWT Token:</label>
+      <input id="token" placeholder="Paste JWT token here" />
+
+      <div id="status" class="status disconnected">Disconnected</div>
+
+      <button onclick="connect()" id="connectBtn">Connect</button>
+      <button onclick="disconnect()" id="disconnectBtn" disabled>
+        Disconnect
+      </button>
+    </div>
+
+    <div class="container">
+      <h3>📡 Subscribe to Symbols</h3>
+
+      <input id="symbol" value="OANDA:EUR_USD" placeholder="Enter symbol" />
+      <button
+        class="subscribe-btn"
+        onclick="subscribe()"
+        id="subscribeBtn"
+        disabled
+      >
+        Subscribe
+      </button>
+      <button
+        class="unsubscribe-btn"
+        onclick="unsubscribe()"
+        id="unsubscribeBtn"
+        disabled
+      >
+        Unsubscribe
+      </button>
+
+      <div style="margin-top: 10px; color: #666">
+        <small
+          >Available symbols: OANDA:EUR_USD, OANDA:USD_JPY, OANDA:GBP_USD</small
+        >
+      </div>
+    </div>
+
+    <div class="container">
+      <h3>📊 Live Updates</h3>
+      <button class="clear-btn" onclick="clearLog()">Clear Log</button>
+      <pre id="log"></pre>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/7.0.5/signalr.min.js"></script>
+
+    <script>
+      let connection;
+      let isConnected = false;
+
+      function log(msg, type = "info") {
+        const timestamp = new Date().toLocaleTimeString();
+        const logElement = document.getElementById("log");
+
+        let cssClass = "";
+        let icon = "";
+
+        switch (type) {
+          case "price":
+            cssClass = "price-update";
+            icon = "💹";
+            break;
+          case "event":
+            cssClass = "event-log";
+            icon = "ℹ️";
+            break;
+          case "error":
+            cssClass = "error-log";
+            icon = "❌";
+            break;
+          default:
+            icon = "📝";
+        }
+
+        const entry = `[${timestamp}] ${icon} ${msg}\n`;
+        logElement.textContent = entry + logElement.textContent;
+      }
+
+      function clearLog() {
+        document.getElementById("log").textContent = "";
+      }
+
+      function updateStatus(connected) {
+        isConnected = connected;
+        const statusEl = document.getElementById("status");
+        const connectBtn = document.getElementById("connectBtn");
+        const disconnectBtn = document.getElementById("disconnectBtn");
+        const subscribeBtn = document.getElementById("subscribeBtn");
+        const unsubscribeBtn = document.getElementById("unsubscribeBtn");
+
+        if (connected) {
+          statusEl.textContent = "Connected ✅";
+          statusEl.className = "status connected";
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+          subscribeBtn.disabled = false;
+          unsubscribeBtn.disabled = false;
+        } else {
+          statusEl.textContent = "Disconnected ❌";
+          statusEl.className = "status disconnected";
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
+          subscribeBtn.disabled = true;
+          unsubscribeBtn.disabled = true;
+        }
+      }
+
+      function connect() {
+        const token = document.getElementById("token").value.trim();
+
+        if (!token) {
+          alert("Please enter a JWT token first!");
+          return;
+        }
+
+        log("Connecting to SignalR hub...", "event");
+
+        connection = new signalR.HubConnectionBuilder()
+          .withUrl("https://localhost:7229/forexHub?access_token=" + token)
+          .configureLogging(signalR.LogLevel.Information)
+          .withAutomaticReconnect()
+          .build();
+
+        // Handle price updates
+        connection.on("priceUpdate", (msg) => {
+          const priceData = typeof msg === "string" ? JSON.parse(msg) : msg;
+          const displayMsg = `${priceData.symbol}: Price=${priceData.price}, Bid=${priceData.bid}, Ask=${priceData.ask}`;
+          log(displayMsg, "price");
+        });
+
+        // Handle subscription confirmation
+        connection.on("subscribed", (data) => {
+          log(`✅ Successfully subscribed to ${data.symbol}`, "event");
+        });
+
+        // Handle unsubscription confirmation
+        connection.on("unsubscribed", (data) => {
+          log(`✅ Successfully unsubscribed from ${data.symbol}`, "event");
+        });
+
+        // Handle connection events
+        connection.onreconnecting(() => {
+          log("⚠️ Connection lost, reconnecting...", "event");
+          updateStatus(false);
+        });
+
+        connection.onreconnected(() => {
+          log("✅ Reconnected successfully!", "event");
+          updateStatus(true);
+        });
+
+        connection.onclose((error) => {
+          if (error) {
+            log(`Connection closed with error: ${error}`, "error");
+          } else {
+            log("Connection closed", "event");
+          }
+          updateStatus(false);
+        });
+
+        // Start connection
+        connection
+          .start()
+          .then(() => {
+            log("✅ Connected to ForexHub successfully!", "event");
+            updateStatus(true);
+          })
+          .catch((err) => {
+            log(`❌ Connection failed: ${err}`, "error");
+            updateStatus(false);
+          });
+      }
+
+      function disconnect() {
+        if (connection) {
+          connection
+            .stop()
+            .then(() => {
+              log("Disconnected from hub", "event");
+              updateStatus(false);
+            })
+            .catch((err) => {
+              log(`Error disconnecting: ${err}`, "error");
+            });
+        }
+      }
+
+      function subscribe() {
+        if (!isConnected) {
+          alert("Please connect first!");
+          return;
+        }
+
+        const symbol = document.getElementById("symbol").value.trim();
+
+        if (!symbol) {
+          alert("Please enter a symbol!");
+          return;
+        }
+
+        log(`Subscribing to ${symbol}...`, "event");
+
+        connection
+          .invoke("Subscribe", symbol)
+          .then(() => {
+            log(`📡 Subscribe request sent for ${symbol}`, "event");
+          })
+          .catch((err) => {
+            log(`❌ Subscribe failed: ${err}`, "error");
+          });
+      }
+
+      function unsubscribe() {
+        if (!isConnected) {
+          alert("Please connect first!");
+          return;
+        }
+
+        const symbol = document.getElementById("symbol").value.trim();
+
+        if (!symbol) {
+          alert("Please enter a symbol!");
+          return;
+        }
+
+        log(`Unsubscribing from ${symbol}...`, "event");
+
+        connection
+          .invoke("Unsubscribe", symbol)
+          .then(() => {
+            log(`📡 Unsubscribe request sent for ${symbol}`, "event");
+          })
+          .catch((err) => {
+            log(`❌ Unsubscribe failed: ${err}`, "error");
+          });
+      }
+    </script>
+  </body>
+</html>
