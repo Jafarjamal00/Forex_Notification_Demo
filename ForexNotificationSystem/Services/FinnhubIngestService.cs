@@ -1,7 +1,7 @@
 ﻿using ForexNotificationSystem.Data;
 using ForexNotificationSystem.Models;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json.Linq;
-using Serilog;
 using Websocket.Client;
 
 public class FinnhubIngestService : BackgroundService
@@ -27,48 +27,28 @@ public class FinnhubIngestService : BackgroundService
         var apiKey = _config["Finnhub:ApiKey"];
         var url = new Uri($"wss://ws.finnhub.io?token={apiKey}");
 
-        _logger.LogInformation("Connecting to Finnhub WebSocket: {Url}", url);
+        _logger.LogInformation("🚀 Connecting to Finnhub WebSocket: {Url}", url);
 
         using var client = new WebsocketClient(url);
 
-        var symbols = new List<string>
+        List<string> symbols;
+        using (var scope = _scopeFactory.CreateScope())
         {
-            "OANDA:EUR_USD",
-            "OANDA:GBP_USD",
-            "OANDA:USD_JPY",
-            "OANDA:USD_CHF",
-            "OANDA:USD_CAD",
-            "OANDA:AUD_USD",
-            "OANDA:NZD_USD",
-    
-            "OANDA:EUR_GBP",
-            "OANDA:EUR_JPY",
-            "OANDA:EUR_CHF",
-            "OANDA:EUR_AUD",
-            "OANDA:EUR_CAD",
-    
-            "OANDA:GBP_JPY",
-            "OANDA:GBP_CHF",
-            "OANDA:GBP_AUD",
-    
-            "OANDA:AUD_JPY",
-            "OANDA:AUD_CAD",
-            "OANDA:CAD_JPY",
-            "OANDA:CHF_JPY",
-            "OANDA:NZD_JPY",
-    
-            "OANDA:USD_SEK",
-            "OANDA:USD_NOK",
-            "OANDA:USD_DKK",
-            "OANDA:USD_ZAR",
-            "OANDA:USD_SGD",
-    
-            "OANDA:USD_INR",
-            "OANDA:USD_MXN",
-            "OANDA:USD_BRL",
-            "OANDA:USD_TRY",
-            "OANDA:USD_PLN",
-        };
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            symbols = await db.ForexSymbols
+                .Where(s => s.IsActive)
+                .Select(s => s.Symbol!)
+                .ToListAsync(stoppingToken);
+
+            _logger.LogInformation("📊 Loaded {Count} symbols from database", symbols.Count);
+
+            if (symbols.Count == 0)
+            {
+                _logger.LogWarning("⚠️ No symbols found in database! Please insert symbols into forex_symbol table.");
+                _logger.LogWarning("Example SQL: INSERT INTO forex_symbol (symbol, is_active) VALUES ('OANDA:EUR_USD', true);");
+            }
+        }
 
         client.MessageReceived.Subscribe(async msg =>
         {
@@ -76,7 +56,15 @@ public class FinnhubIngestService : BackgroundService
             {
                 var json = JObject.Parse(msg.Text);
 
-                if (json["type"]?.ToString() != "trade" || json["data"] == null)
+                var msgType = json["type"]?.ToString();
+
+                if (msgType == "ping")
+                {
+                    _logger.LogDebug("📡 Received ping from Finnhub");
+                    return;
+                }
+
+                if (msgType != "trade" || json["data"] == null)
                 {
                     return;
                 }
@@ -99,9 +87,10 @@ public class FinnhubIngestService : BackgroundService
                     };
 
                     Cache[symbol] = priceTick;
-
                     ticksToSave.Add(priceTick);
                     _tickCounter++;
+
+                    _logger.LogInformation("📊 Tick: {Symbol} @ {Price}", symbol, price);
                 }
 
                 _logger.LogDebug("Processed {Count} ticks. Cache size: {CacheSize}", ticksToSave.Count, Cache.Count);
@@ -114,24 +103,39 @@ public class FinnhubIngestService : BackgroundService
                     await db.PriceTicks.AddRangeAsync(ticksToSave, stoppingToken);
                     await db.SaveChangesAsync(stoppingToken);
 
-                    _logger.LogInformation("Saved batch of {Count} ticks to database", ticksToSave.Count);
+                    _logger.LogInformation("💾 Saved batch of {Count} ticks to database", ticksToSave.Count);
                     _tickCounter = 0;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing Finnhub message");
+                _logger.LogError(ex, "❌ Error processing Finnhub message");
             }
         });
 
-        // Handle reconnection - resubscribe to all symbols
+        // ✅ Reconnection handler - reloads symbols from database
         client.ReconnectionHappened.Subscribe(async info =>
         {
-            _logger.LogInformation("Reconnection happened, type: {Type}", info.Type);
-
+            _logger.LogWarning("🔄 Reconnection happened, type: {Type}", info.Type);
             await Task.Delay(1000, stoppingToken);
 
-            foreach (var symbol in symbols)
+            // ✅ Reload symbols from database on reconnection
+            List<string> reconnectSymbols;
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                reconnectSymbols = await db.ForexSymbols
+                    .Where(s => s.IsActive)
+                    .Select(s => s.Symbol!)
+                    .ToListAsync(stoppingToken);
+            }
+
+            // Also include symbols currently in cache
+            var allSymbols = reconnectSymbols.Concat(Cache.Keys).Distinct().ToList();
+
+            _logger.LogInformation("Resubscribing to {Count} symbols from database...", allSymbols.Count);
+
+            foreach (var symbol in allSymbols)
             {
                 try
                 {
@@ -147,21 +151,29 @@ public class FinnhubIngestService : BackgroundService
 
         client.DisconnectionHappened.Subscribe(info =>
         {
-            _logger.LogWarning("Disconnection happened, type: {Type}", info.Type);
+            _logger.LogWarning("⚠️ Disconnection happened, type: {Type}", info.Type);
         });
 
         await client.Start();
 
-        _logger.LogInformation("Subscribing to {Count} currency pairs...", symbols.Count);
+        _logger.LogInformation("✅ WebSocket connected. Subscribing to {Count} currency pairs from database...", symbols.Count);
 
-        // Subscribe to all symbols
+        // ✅ Subscribe to all symbols from database
         foreach (var symbol in symbols)
         {
-            client.Send($"{{\"type\":\"subscribe\",\"symbol\":\"{symbol}\"}}");
-            _logger.LogDebug("Subscribed to {Symbol}", symbol);
+            try
+            {
+                client.Send($"{{\"type\":\"subscribe\",\"symbol\":\"{symbol}\"}}");
+                _logger.LogInformation("Subscribed to {Symbol}", symbol);
+                await Task.Delay(50, stoppingToken); // Small delay between subscriptions
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to subscribe to {Symbol}", symbol);
+            }
         }
 
-        _logger.LogInformation("FinnhubIngestService started. Subscribed to {Count} currency pairs", symbols.Count);
+        _logger.LogInformation("🎉 FinnhubIngestService started. Subscribed to {Count} currency pairs from database.", symbols.Count);
 
         // Keep service running
         while (!stoppingToken.IsCancellationRequested)
